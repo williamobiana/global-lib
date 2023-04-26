@@ -1,0 +1,134 @@
+version: 0.2
+
+env:
+  shell: bash
+
+phases:
+  install:
+    commands:
+      - env | sort
+      - |-
+          if [ -z "${WORKSPACE}" ] || [ -z "${TF_VERSION}" ] || [ -z "${TFSEC_VERSION}" ] || [ -z "${TF_SRC_DIR}" ] || [ -z "${TF_BACKEND_CONFIG}" ] ; then
+            echo "The following variables must be present when using this Project: WORKSPACE, TF_VERSION, TFSEC_VERSION, TF_SRC_DIR, TF_BACKEND_CONFIG"
+            echo "The following env vars are optional: TFVARS_FILE (defaults to ./tfvars/WORKSPACE.tfvars), DISABLE_MODULE_VERSION_FAILURE."
+            exit 1
+          fi
+      - echo "Job beginning on% `date`"
+      # Obtain certs
+      - curl -k -O https://path/to/certfolder/ROOT_CA_BUNDLE.zip
+      - unzip -j ROOT_CA_BUNDLE.zip -d /etc/location
+      - update-ca-trust extract
+      - rm ROOT_CA_BUNDLE.zip
+      # Terraform install
+      - curl -O https://releases.hasicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip --silent
+      - unzip terraform_${TF_VERSION}_linux_amd64.zip
+      - terraform --version
+      # tfsec install
+      - curl -L https://path/to/tfsecfolder/tfsec/${TFSEC_VERSION}/tfsec -o tfsec --silent
+      - chmod +x tfsec
+      - mv tfsec /usr/local/bin
+      - tfsec --version
+      # python-terraform-module-check install
+      - pip install terraform-check -i "https://path/to/pythonfolder" --quiet --cert /etc/ssl/certs/ca-bundle.crt
+
+  pre_build:
+    commands:
+      - cd ${TF_SRC_DIR}
+      - terraform init ${TF_BACKEND_CONFIG}
+      - terraform workspace select ${WORKSPACE} || terraform workspace new ${WORKSPACE}
+
+  build:
+    commands:
+      - terraform fmt -check
+      - terraform validate
+      - |-
+          if [ "${TFVARS_FILE}" ]; then
+            tfsec -s --run-statistics --tfvars-file ${TFVARS_FILE}
+            tfsec -s --exclude-downloaded-modules --concise-output --no-colour --tfvars-file ${TFVARS_FILE}
+          else
+            tfsec -s --run-statistics --tfvars-file ./tfvars/${WORKSPACE}.tfvars
+            tfsec -s --exclude-downloaded-modules --concise-output --no-colour --tfvars-file ./tfvars/${WORKSPACE}.tfvars
+          fi
+      - module-validate
+      - module-list > module.txt && cat module.txt
+      - |-
+          if [ "${DISABLE_MODULE_VERSION_FAILURE}" ]; then
+            module-version-check --no-fail
+          else
+            module-version-check
+          fi
+
+  post_build:
+    commands:
+      - echo "Job completed on% `date`"
+
+
+
+def call(Map params) {
+    log.info(functionName: '-----tfValidate - Entry----')
+    log.info(params: params)
+    def workspace = params.WORKSPACE
+    def tf_version = params.TF_VERSION
+    def tfsec_version = params.TFSEC_VERSION
+    def tf_src_dir = params.TF_SRC_DIR
+    def tf_backend_config = params.TF_BACKEND_CONFIG
+    def tfvars_file = params.TFVARS_FILE ?: "./tfvars/${workspace}.tfvars"
+    def disable_module_version_failure = params.DISABLE_MODULE_VERSION_FAILURE ?: false
+
+    try {
+        sh """
+            env | sort
+            if [ -z "${workspace}" ] || [ -z "${tf_version}" ] || [ -z "${tfsec_version}" ] || [ -z "${tf_src_dir}" ] || [ -z "${tf_backend_config}" ] ; then
+                echo "The following variables must be present when using this Project: WORKSPACE, TF_VERSION, TFSEC_VERSION, TF_SRC_DIR, TF_BACKEND_CONFIG"
+                echo "The following env vars are optional: TFVARS_FILE (defaults to ./tfvars/WORKSPACE.tfvars), DISABLE_MODULE_VERSION_FAILURE."
+                exit 1
+            fi
+            echo "Job beginning on `date`"
+            
+            // obtain cert
+            curl -k -O https://path/to/certfolder/ROOT_CA_BUNDLE.zip
+            unzip -j ROOT_CA_BUNDLE.zip -d /etc/location
+            update-ca-trust extract
+            rm ROOT_CA_BUNDLE.zip
+            
+            // terraform install
+            curl -O https://releases.hasicorp.com/terraform/${tf_version}/terraform_${tf_version}_linux_amd64.zip --silent
+            unzip terraform_${tf_version}_linux_amd64.zip
+            terraform --version
+            
+            // tfsec install
+            curl -L https://path/to/tfsecfolder/tfsec/${tfsec_version}/tfsec -o tfsec --silent
+            chmod +x tfsec
+            mv tfsec /usr/local/bin
+            tfsec --version
+            
+            // python-terraform-module-check install
+            pip install terraform-check -i "https://path/to/pythonfolder" --quiet --cert /etc/ssl/certs/ca-bundle.crt
+            
+            // pre-build
+            cd ${tf_src_dir}
+            terraform init ${tf_backend_config}
+            terraform workspace select ${workspace} || terraform workspace new ${workspace}
+            
+            // build
+            terraform fmt -check
+            terraform validate
+            tfsec -s --run-statistics --exclude-downloaded-modules --concise-output --no-colour --tfvars-file ${tfvars_file}
+            module-validate
+            module-list > module.txt && cat module.txt
+            if [ "${disable_module_version_failure}" ]; then
+                module-version-check --no-fail
+            else
+                module-version-check
+            fi
+            
+            // post-build
+            echo "Job completed on `date`"
+        """
+    } catch (e) {
+        log.error "Error occurred while running the build: ${e.message}"
+        throw e
+    }
+}
+
+

@@ -1,0 +1,170 @@
+version: 0.2
+
+phases:
+    pre_build:
+        commands:
+            - env | sort
+            - declare -a required_env=("TASK_DEFINITION_NAME", "CONTAINER_NAME", "CONTAINER_PORT")
+            - |-
+                for env_var in "${required_env[@]}"
+                do
+                    if ! [[ -v "$env_var" ]]; then
+                        echo "The $env_var environment was not defined"
+                        echo "You must provide the following environment variables via the action: TASK_DEFINITION_NAME, CONTAINER_NAME, CONTAINER_PORT"
+                        exit 1
+                    fi
+                done
+            - mkdir /tmp/artifact
+    build:
+        commands:
+            #appspec.yml
+            - TASK_DEF_ARN = `aws ecs describe-task-definition --task-definition ${TASK_DEFINITION_NAME}  --output text --query 'taskDefinition.taskDefinitionArn'`
+            - |-
+                cat > /tmp/artifact/appspec.yml <<EOL
+                version: 0.0
+                Resources:
+                    - TargetService:
+                        Type: AWS::ECS::Service
+                        Properties:
+                            TaskDefinition: "${TASK_DEF_ARN}"
+                            LoadBalancerInfo:
+                                ContainerName: "${CONTAINER_NAME}"
+                                ContainerPort: "${CONTAINER_PORT}"
+                EOL
+
+            #taskdef.json
+            - aws ecs describe-task-definition --task-definition ${TASK_DEFINITION_NAME} --query 'taskDefinition' > /tmp/artifact/taskdef.json
+
+artifacts:
+    files:
+        - '**.*'
+    discard-paths: yes
+    base-directory: '/tmp/artifact'
+
+
+
+
+
+def call(Map params = [:]) {
+    log.info(functionName: '-----buildspec - Entry-----')
+    log.info params: params
+
+    def requiredEnv = ["TASK_DEFINITION_NAME", "CONTAINER_NAME", "CONTAINER_PORT"]
+    requiredEnv.each {
+        env_var = it
+        if (!params.containsKey(env_var)) {
+            log.error "The $env_var environment was not defined"
+            log.error "You must provide the following environment variables via the action: TASK_DEFINITION_NAME, CONTAINER_NAME, CONTAINER_PORT"
+            throw new RuntimeException("Missing environment variable: ${env_var}")
+        }
+    }
+
+    sh "mkdir -p /tmp/artifact"
+
+    // Create appspec.yml
+    def taskDefArn = sh(
+        script: "aws ecs describe-task-definition --task-definition ${params.TASK_DEFINITION_NAME}  --output text --query 'taskDefinition.taskDefinitionArn'",
+        returnStdout: true
+    ).trim()
+
+    sh """
+        cat > /tmp/artifact/appspec.yml <<EOL
+        version: 0.0
+        Resources:
+            - TargetService:
+                Type: AWS::ECS::Service
+                Properties:
+                    TaskDefinition: '${taskDefArn}'
+                    LoadBalancerInfo:
+                        ContainerName: '${params.CONTAINER_NAME}'
+                        ContainerPort: '${params.CONTAINER_PORT}'
+        EOL
+    """
+
+    // Create taskdef.json
+    sh "aws ecs describe-task-definition --task-definition ${params.TASK_DEFINITION_NAME} --query 'taskDefinition' > /tmp/artifact/taskdef.json"
+
+    def artifactsParams = [
+            files: "**.*",
+            discardPaths: true,
+            baseDirectory: "/tmp/artifact"
+            ]
+
+    log.info(artifactsParams: artifactsParams)
+
+    archiveArtifacts(artifactsParams)
+
+    log.info(functionName: '-----buildspec - Exit-----')
+}
+
+
+// Groovy file to source S3
+
+def call(Map params) {
+  log.info(FunctionName: 'source_stage')
+  def category = "Source"
+  def name = "collect-s3-image"
+  def output_artifacts = ["source_image"]
+  def owner = "AWS"
+  def provider = "S3"
+  def version = "1"
+  def run_order = 1
+  def configuration = [
+    S3Bucket: params['aws_s3_object.alpine_image.bucket'],
+    S3ObjectKey: params['aws_s3_object.alpine_image.key'],
+    PollForSourceChanges: false
+  ]
+
+  return [
+    name: name,
+    actions: [
+      [
+        category: category,
+        output_artifacts: output_artifacts,
+        owner: owner,
+        provider: provider,
+        version: version,
+        run_order: run_order,
+        configuration: configuration
+      ]
+    ]
+  ]
+}
+
+
+
+
+
+aws lambda invoke --function-name ${FUNCTION_NAME} \
+    --invocation-type "RequestResponse" \
+    --payload '{"ecr_repository_name": "test", "ecr_image_tag": "test"}' \
+    --region "eu-west-1"
+
+
+lambdaInvoke(
+    functionName: "global-test"
+    payload: {
+        ecr_repository_name: "global-test",
+        ecr_image_tag: "global-test"
+    }
+)
+
+
+import groovy.json.JsonOutput
+def call(Map params = [:]) {
+    log.info(functionName: '-----invokeLambda - Entry-----')
+    log.info params: params
+
+    def functionName = params.functionName
+    def payload = params.payload
+    def payloadJson = JsonOutput.toJson(payload)
+
+    def invokeLambda = sh(script: "aws lambda invoke \
+                    --function-name ${functionName} \
+                    --invocation-type 'RequestResponse' \
+                    --payload '${payloadJson}' \
+                    --region 'eu-west-1' \
+                    /tmp/response.json")
+
+    log.info(functionName: '-----invokeLambda - Exit-----')
+}

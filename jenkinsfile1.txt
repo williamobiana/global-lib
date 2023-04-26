@@ -1,0 +1,28 @@
+pipeline {
+    agent {
+        label 'worker-node-name'
+    }
+
+    environment{
+        //if you have a proxy or any other environment variables, you can add it here
+        http_proxy = "proxy.vpclocal:8080"
+        https_proxy = "proxy.vpclocal:8080"
+        no_proxy = "add-ip-address-here,var/run/docker.sock,gitrepo_url"
+    }
+
+    stages {
+        stage('Setup') {
+            steps {
+                library "library-name@$BRANCH_NAME"
+            }
+        }
+        stage('Other Stages you Wish to Add') {}
+    }
+
+    post {
+        always {
+            cleanWs()
+            //...add stuff
+        }
+    }
+}
